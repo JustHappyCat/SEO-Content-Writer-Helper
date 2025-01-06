@@ -571,31 +571,39 @@ def main():
                 orig_name = rec["filename"]
                 st.write(f"Currently selected: **{orig_name}**")
 
-                kw_in = st.text_input("Keywords (comma-separated)")
-                desc_in = st.text_input("Description / Alt Text")
-                lat_in = st.text_input("Latitude")
-                lon_in = st.text_input("Longitude")
-                newf_in = st.text_input("New Filename (optional)")
+                kw_in = st.text_input("Keywords (comma-separated)", placeholder="e.g., keyword1, keyword2")
+                desc_in = st.text_input("Description / Alt Text", placeholder="Enter description here")
+                lat_in = st.text_input("Latitude", placeholder="e.g., 37.7749")
+                lon_in = st.text_input("Longitude", placeholder="e.g., -122.4194")
+                newf_in = st.text_input("New Filename (optional)", placeholder="Enter new filename if desired")
 
                 try:
                     lat_val = float(lat_in) if lat_in.strip() else None
                     lon_val = float(lon_in) if lon_in.strip() else None
+
+                    # Validate coordinate ranges
+                    if lat_val is not None and not (-90 <= lat_val <= 90):
+                        st.warning("Latitude must be between -90 and 90.")
+                        lat_val = None
+                    if lon_val is not None and not (-180 <= lon_val <= 180):
+                        st.warning("Longitude must be between -180 and 180.")
+                        lon_val = None
+
                 except ValueError:
                     lat_val, lon_val = None, None
-                    st.warning("Invalid lat/lon values.")
-             # **Map Display Code Starts Here**
+                    st.warning("Invalid lat/lon values. Please enter numeric values.")
+
+                # **Map Display Code Starts Here**
                 if lat_val is not None and lon_val is not None:
                     st.markdown("#### Location Map")
                     map_data = pd.DataFrame({
-                        'latitude': [lat_val],
-                        'longitude': [lon_val]
+                        'lat': [lat_val],  # Changed from 'latitude' to 'lat'
+                        'lon': [lon_val]   # Changed from 'longitude' to 'lon'
                     })
-                st.map(map_data)
+                    st.map(map_data)
                 if (lat_val is None or lon_val is None) and (lat_in or lon_in):
                     st.warning("Please provide both valid latitude and longitude to display the map.")
-       
-            # **Map Display Code Ends Here**
-
+                # **Map Display Code Ends Here**
 
                 if st.button("Write EXIF Tags"):
                     updated, final_name = write_exif_tags_exiftool(
