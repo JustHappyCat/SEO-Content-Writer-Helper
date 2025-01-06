@@ -1,8 +1,9 @@
 import streamlit as st
 from docx import Document
 from io import BytesIO
-from thefuzz import fuzz
+import hashlib
 import re
+import subprocess
 from collections import Counter
 import pandas as pd
 import nltk
@@ -12,8 +13,7 @@ import os
 import datetime
 from urllib.parse import urlparse
 from nltk.tokenize import wordpunct_tokenize
-from nltk.chat.util import Chat, reflections  # Kept for completeness, but no longer used for Eliza
-import piexif
+from nltk.chat.util import Chat, reflections  # Not used, but kept for completeness
 from PIL import Image
 from bs4 import BeautifulSoup  # For HTML parsing in the HTML Processor tab
 
@@ -314,61 +314,79 @@ def check_url_online(url):
         return ("Offline", str(e))
 
 # -----------------------------------------------------------------------------
-#                           EXIF Editor Functions
+#                    EXIF Editor using exiftool (subprocess)
 # -----------------------------------------------------------------------------
-def write_exif_tags(image_data, keywords="", description="", lat=None, lon=None):
+def write_exif_tags_exiftool(
+    image_bytes, 
+    keywords="", 
+    description="", 
+    lat=None, 
+    lon=None, 
+    new_filename=""
+):
     """
-    Writes EXIF data (keywords, description, optional GPS coordinates) into a JPEG image.
-    Returns a BytesIO object with the updated image.
+    Writes IPTC/XMP data via exiftool to ensure broad compatibility.
+    - keywords: comma-separated string for IPTC Keywords
+    - description: stored in IPTC:Caption-Abstract or XMP:Description
+    - lat, lon: optional float values for GPS
+    - new_filename: optional new file name (string). If blank, keep original.
+
+    Returns a tuple of (updated_image_bytes, final_filename).
     """
-    img = Image.open(image_data)
-    # Convert to JPEG if not already
-    if img.format != 'JPEG':
-        rgb_img = img.convert('RGB')
-        buf = BytesIO()
-        rgb_img.save(buf, format='JPEG')
-        buf.seek(0)
-        img = Image.open(buf)
 
-    # Load or initialize EXIF
-    exif_data = img.info.get('exif')
-    if exif_data is None:
-        exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
-    else:
-        exif_dict = piexif.load(exif_data)
+    # Create a temporary input file
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as in_temp:
+        in_temp.write(image_bytes)
+        temp_input_path = in_temp.name
 
-    # Description tag
-    description_tag = 270  # ImageDescription in 0th IFD
-    exif_dict["0th"][description_tag] = description.encode('utf-8', 'replace')
+    # Build base exiftool command
+    cmd = ["exiftool", "-overwrite_original"]
 
-    # XPKeywords tag
-    xpkeywords_tag = 0x9C9E
-    xpkeywords_str = keywords.encode('utf-16-le')
-    exif_dict["0th"][xpkeywords_tag] = xpkeywords_str
+    # If user provided keywords, set them. (IPTC:Keywords supports multiple entries)
+    if keywords.strip():
+        # exiftool can accept multiple keywords via repeated -Keywords= or a single line
+        # We’ll split on comma, but you can parse differently if you prefer
+        kw_list = [kw.strip() for kw in keywords.split(",") if kw.strip()]
+        # remove old keywords, add new ones
+        cmd.append("-Keywords=")  # Clear existing
+        for kw in kw_list:
+            cmd.append(f"-Keywords+={kw}")
 
-    # If lat/lon are provided, write GPS data
+    # If user provided description, store in IPTC or XMP
+    if description.strip():
+        cmd.append(f"-Description={description}")
+        cmd.append(f"-Caption-Abstract={description}")
+
+    # If lat/lon provided, set GPS. exiftool by default uses EXIF or XMP
     if lat is not None and lon is not None:
-        lat_ref = 'N' if lat >= 0 else 'S'
-        lon_ref = 'E' if lon >= 0 else 'W'
-        lat = abs(lat)
-        lon = abs(lon)
+        cmd.append(f"-GPSLatitude={lat}")
+        cmd.append(f"-GPSLongitude={lon}")
+        # Also specify reference (N/S, E/W)
+        lat_ref = "N" if lat >= 0 else "S"
+        lon_ref = "E" if lon >= 0 else "W"
+        cmd.append(f"-GPSLatitudeRef={lat_ref}")
+        cmd.append(f"-GPSLongitudeRef={lon_ref}")
 
-        def deg_to_dms_rational(deg):
-            d = int(deg)
-            m = int((deg - d) * 60)
-            s = (deg - d - m/60) * 3600
-            return [(d, 1), (m, 1), (int(s * 100), 100)]
+    # exiftool modifies the input file in place with -overwrite_original
+    # so we just pass the temp_input_path at the end
+    cmd.append(temp_input_path)
 
-        exif_dict['GPS'][piexif.GPSIFD.GPSLatitudeRef] = lat_ref.encode('ascii')
-        exif_dict['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lon_ref.encode('ascii')
-        exif_dict['GPS'][piexif.GPSIFD.GPSLatitude] = deg_to_dms_rational(lat)
-        exif_dict['GPS'][piexif.GPSIFD.GPSLongitude] = deg_to_dms_rational(lon)
+    # Run exiftool
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
-    exif_bytes = piexif.dump(exif_dict)
-    out_buf = BytesIO()
-    img.save(out_buf, format='JPEG', exif=exif_bytes)
-    out_buf.seek(0)
-    return out_buf
+    # Now read back the updated file
+    with open(temp_input_path, "rb") as updated_file:
+        updated_image_data = updated_file.read()
+
+    # Clean up
+    os.remove(temp_input_path)
+
+    # Decide final file name
+    # If user typed something for new_filename, use that; otherwise keep "updated_image.jpg" or something
+    final_filename = new_filename.strip() if new_filename.strip() else "updated_image.jpg"
+
+    return updated_image_data, final_filename
 
 # -----------------------------------------------------------------------------
 #                           Main App
@@ -378,9 +396,9 @@ def main():
 
     # Create Tabs:
     # 1. Keyword Checker
-    # 2. Exif Editor
+    # 2. Exif Editor (using exiftool)
     # 3. URL Checker
-    # 4. Date Calculator  <--- REPLACED the Eliza Chatbot
+    # 4. Date Calculator
     # 5. HTML Processor
     tabs = st.tabs(["Keyword Checker", "Exif Editor", "URL Checker", "Date Calculator", "HTML Processor"])
 
@@ -523,31 +541,42 @@ def main():
             st.rerun()
 
     # -----------------------------------
-    # 2) EXIF Editor Tab
+    # 2) EXIF Editor Tab (using exiftool)
     # -----------------------------------
     with tabs[1]:
         st.markdown("""
-        ### 🖼️ EXIF Editor
+        ### 🖼️ EXIF Editor (Using exiftool)
 
         **This tool allows you to:**
         - Upload one or multiple images (JPEG or PNG).
         - View them in a simple gallery.
-        - Edit EXIF data: keywords, description, and optional GPS coordinates (lat/long).
-        - Download the updated image with the newly written EXIF tags.
+        - Edit metadata:
+          - Keywords (comma-separated)
+          - Description
+          - Optional GPS (lat/long)
+          - Optional New Filename
+        - Click "Write EXIF Tags" to embed the data into IPTC/XMP (widely recognized).
+        - Download your updated image.
 
         **How to Use:**
         1. Upload one or more images.
         2. Select an image from the gallery on the right.
-        3. Enter EXIF details (keywords, description, lat/long).
-        4. Click "Write EXIF Tags" to embed the data.
+        3. Enter EXIF details.
+        4. Write EXIF Tags & optionally rename the file.
         5. Download your updated image.
         """)
 
+        # Keep track of images as (md5_hash -> {"name":..., "bytes":...}) to avoid duplicates
         if "exif_images" not in st.session_state:
-            st.session_state.exif_images = []
-        if "selected_image_index" not in st.session_state:
-            st.session_state.selected_image_index = None
+            st.session_state.exif_images = {}
+        if "selected_image_hash" not in st.session_state:
+            st.session_state.selected_image_hash = None
 
+        def file_hash(content):
+            """Compute MD5 hash of file bytes to avoid duplicates."""
+            return hashlib.md5(content).hexdigest()
+
+        # Upload images
         uploaded_exif_files = st.file_uploader(
             "Upload Image(s)",
             type=["jpg", "jpeg", "png"],
@@ -556,49 +585,59 @@ def main():
         if uploaded_exif_files:
             for f in uploaded_exif_files:
                 img_bytes = f.read()
-                st.session_state.exif_images.append(img_bytes)
+                h = file_hash(img_bytes)
+                if h not in st.session_state.exif_images:
+                    # Store dictionary with filename + bytes
+                    st.session_state.exif_images[h] = {"name": f.name, "bytes": img_bytes}
+                else:
+                    st.warning(f"Duplicate file skipped: {f.name}")
 
+        # Clear & Delete Buttons
         btn_clear_gallery, btn_delete_selected = st.columns(2)
         with btn_clear_gallery:
             if st.button("Clear Gallery"):
-                st.session_state.exif_images = []
-                st.session_state.selected_image_index = None
+                st.session_state.exif_images = {}
+                st.session_state.selected_image_hash = None
 
         with btn_delete_selected:
             if st.button("Delete Selected Image"):
-                if (
-                    st.session_state.selected_image_index is not None
-                    and 0 <= st.session_state.selected_image_index < len(st.session_state.exif_images)
-                ):
-                    del st.session_state.exif_images[st.session_state.selected_image_index]
-                    st.session_state.selected_image_index = None
+                sh = st.session_state.selected_image_hash
+                if sh and sh in st.session_state.exif_images:
+                    del st.session_state.exif_images[sh]
+                    st.session_state.selected_image_hash = None
 
+        # Layout columns: editor on left, gallery on right
         left_col, right_col = st.columns([2, 1])
 
         with right_col:
             st.markdown("#### Gallery")
             if st.session_state.exif_images:
-                for i, img_data in enumerate(st.session_state.exif_images):
+                for h, info in st.session_state.exif_images.items():
+                    name = info["name"]
+                    img_data = info["bytes"]
                     try:
                         img = Image.open(BytesIO(img_data))
-                        st.image(img, width=120)
-                        if st.button(f"Select Image {i+1}", key=f"select_image_{i}"):
-                            st.session_state.selected_image_index = i
-                    except Exception:
-                        st.error("Error loading image from memory.")
+                        st.image(img, width=120, caption=name)
+                        if st.button(f"Select {name}", key=f"select_image_{h}"):
+                            st.session_state.selected_image_hash = h
+                    except Exception as e:
+                        st.error(f"Error loading image {name}: {e}")
             else:
                 st.info("No images in the gallery yet. Please upload images above.")
 
         with left_col:
             st.markdown("#### EXIF Data Editor")
-            idx = st.session_state.selected_image_index
-            if idx is not None and 0 <= idx < len(st.session_state.exif_images):
-                selected_image_data = st.session_state.exif_images[idx]
+            shash = st.session_state.selected_image_hash
+            if shash and shash in st.session_state.exif_images:
+                selected_image = st.session_state.exif_images[shash]
+                selected_image_data = selected_image["bytes"]
 
+                # Fields
                 keywords_tags = st.text_input("Keywords / Tags (comma-separated)")
                 description_text = st.text_input("Description / Alt Text")
                 lat_input = st.text_input("Latitude (e.g. 34.70713)")
                 lon_input = st.text_input("Longitude (e.g. 33.02261)")
+                new_filename_input = st.text_input("New Filename (optional)", value="")
 
                 try:
                     lat_val = float(lat_input.strip()) if lat_input.strip() else None
@@ -612,23 +651,30 @@ def main():
                     st.map(map_data)
 
                 if st.button("Write EXIF Tags"):
-                    updated_img = write_exif_tags(
-                        BytesIO(selected_image_data),
+                    updated_img_data, final_filename = write_exif_tags_exiftool(
+                        image_bytes=selected_image_data,
                         keywords=keywords_tags,
                         description=description_text,
                         lat=lat_val,
-                        lon=lon_val
+                        lon=lon_val,
+                        new_filename=new_filename_input
                     )
-                    st.session_state.exif_images[idx] = updated_img.read()
-                    st.success("EXIF tags written successfully!")
+                    # Update stored bytes
+                    st.session_state.exif_images[shash]["bytes"] = updated_img_data
+                    # If user gave a new filename, we update the name
+                    if new_filename_input.strip():
+                        st.session_state.exif_images[shash]["name"] = final_filename
 
-                if idx < len(st.session_state.exif_images):
-                    out_img_data = st.session_state.exif_images[idx]
-                    b64_img = base64.b64encode(out_img_data).decode()
-                    download_link = f'<a href="data:file/jpg;base64,{b64_img}" download="updated_image.jpg">Download Updated Image</a>'
-                    st.markdown(download_link, unsafe_allow_html=True)
+                    st.success(f"EXIF tags written successfully! Final file name: {final_filename}")
+
+                # Provide a download link
+                out_img_data = st.session_state.exif_images[shash]["bytes"]
+                dl_filename = st.session_state.exif_images[shash]["name"]
+                b64_img = base64.b64encode(out_img_data).decode()
+                download_link = f'<a href="data:file/jpg;base64,{b64_img}" download="{dl_filename}">Download Updated Image</a>'
+                st.markdown(download_link, unsafe_allow_html=True)
             else:
-                st.info("Select an image from the gallery on the right to edit its EXIF data.")
+                st.info("Select an image from the gallery on the right to edit its metadata.")
 
     # -----------------------------------
     # 3) URL Checker Tab
@@ -685,7 +731,7 @@ def main():
                             st.dataframe(results_df, use_container_width=True)
 
     # -----------------------------------
-    # 4) Date Calculator Tab (Replacing Eliza Chatbot)
+    # 4) Date Calculator Tab
     # -----------------------------------
     with tabs[3]:
         st.markdown("""
