@@ -14,7 +14,7 @@ import datetime
 from urllib.parse import urlparse
 from nltk.tokenize import wordpunct_tokenize
 from nltk.chat.util import Chat, reflections  # Not used, but kept for completeness
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup  # For HTML parsing in the HTML Processor tab
 
 st.set_page_config(page_title="📄 Sibi's Research Bin", layout="wide")
@@ -141,8 +141,7 @@ def extract_urls_from_paragraph(paragraph):
     Extracts all URLs from a paragraph by analyzing its hyperlinks.
     """
     urls = []
-    hyperlinks = get_paragraph_hyperlinks(paragraph)
-    for _, url in hyperlinks:
+    for _, url in get_paragraph_hyperlinks(paragraph):
         urls.append(url)
     return urls
 
@@ -154,8 +153,7 @@ def extract_article_content(article_paragraphs):
     article_hyperlinks = []
     for para in article_paragraphs:
         article_text += para.text + '\n'
-        hyperlinks = get_paragraph_hyperlinks(para)
-        article_hyperlinks.extend(hyperlinks)
+        article_hyperlinks.extend(get_paragraph_hyperlinks(para))
     return article_text, article_hyperlinks
 
 def preprocess_text(text):
@@ -173,7 +171,6 @@ def check_keyword_hyperlink(keyword, url, article_hyperlinks, article_text):
     """
     keyword_processed = preprocess_text(keyword)
     article_text_processed = preprocess_text(article_text)
-    # Check if the keyword is present
     if keyword_processed.lower() in article_text_processed.lower():
         keyword_present = True
     else:
@@ -182,7 +179,6 @@ def check_keyword_hyperlink(keyword, url, article_hyperlinks, article_text):
     if not keyword_present:
         return 'not_found'
 
-    # Attempt to match the hyperlink text to the processed keyword text
     matching_links = []
     for text, link in article_hyperlinks:
         text_processed = preprocess_text(text)
@@ -192,11 +188,9 @@ def check_keyword_hyperlink(keyword, url, article_hyperlinks, article_text):
     if not matching_links:
         return 'incorrect_url'
 
-    # If a URL is specified, check if it matches
     for link in matching_links:
         if url and link.lower() == url.lower():
             return 'correct'
-
     return 'incorrect_url'
 
 def analyze_dialect(text):
@@ -232,7 +226,9 @@ def analyze_dialect(text):
             'thongs','brolly','ute','arvo'
         },
     }
+    import re
     word_list = re.findall(r'\b\w+\b', text.lower())
+    from collections import Counter
     word_counts = Counter(word_list)
     dialect_scores = {dialect:0 for dialect in dialect_words}
     for dialect, words in dialect_words.items():
@@ -261,7 +257,7 @@ def generate_html_report(summary_data, num_images, all_hyperlinks):
 
         def color_status(row):
             color = row['Color']
-            return [f'background-color: {color}; color: white']*len(row)
+            return [f'background-color: {color}; color: white'] * len(row)
 
         styled_keywords = keywords_df.style.apply(color_status, axis=1)
         report += styled_keywords.to_html(escape=False)
@@ -288,8 +284,7 @@ def parse_input_urls(input_text):
     Parses input text containing URLs separated by commas or newlines.
     """
     input_text = input_text.replace('\n', ',')
-    urls = [url.strip() for url in input_text.split(',') if url.strip()]
-    return urls
+    return [url.strip() for url in input_text.split(',') if url.strip()]
 
 def normalize_url(url):
     """
@@ -316,77 +311,74 @@ def check_url_online(url):
 # -----------------------------------------------------------------------------
 #                    EXIF Editor using exiftool (subprocess)
 # -----------------------------------------------------------------------------
+def can_exiftool_edit(file_ext):
+    """
+    Basic check for file types commonly editable by exiftool.
+    You can expand this list if desired.
+    """
+    # exiftool can handle more than these, but here’s a small example set
+    editable_exts = {'.jpg', '.jpeg', '.png', '.pdf', '.tif', '.tiff'}
+    return file_ext.lower() in editable_exts
+
 def write_exif_tags_exiftool(
-    image_bytes, 
-    keywords="", 
-    description="", 
-    lat=None, 
-    lon=None, 
+    file_bytes,
+    orig_filename,
+    keywords="",
+    description="",
+    lat=None,
+    lon=None,
     new_filename=""
 ):
     """
-    Writes IPTC/XMP data via exiftool to ensure broad compatibility.
-    - keywords: comma-separated string for IPTC Keywords
-    - description: stored in IPTC:Caption-Abstract or XMP:Description
-    - lat, lon: optional float values for GPS
-    - new_filename: optional new file name (string). If blank, keep original.
-
-    Returns a tuple of (updated_image_bytes, final_filename).
+    Writes IPTC/XMP data via exiftool, if supported. Otherwise returns file unchanged.
+    Returns (updated_file_bytes, final_filename).
     """
+    _, extension = os.path.splitext(orig_filename)
+    if not can_exiftool_edit(extension):
+        # If exiftool can't handle this file type, skip editing and rename if desired
+        final_name = new_filename.strip() if new_filename.strip() else orig_filename
+        return file_bytes, final_name
 
-    # Create a temporary input file
     import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as in_temp:
-        in_temp.write(image_bytes)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as in_temp:
+        in_temp.write(file_bytes)
         temp_input_path = in_temp.name
 
-    # Build base exiftool command
     cmd = ["exiftool", "-overwrite_original"]
 
-    # If user provided keywords, set them. (IPTC:Keywords supports multiple entries)
     if keywords.strip():
-        # exiftool can accept multiple keywords via repeated -Keywords= or a single line
-        # We’ll split on comma, but you can parse differently if you prefer
         kw_list = [kw.strip() for kw in keywords.split(",") if kw.strip()]
-        # remove old keywords, add new ones
         cmd.append("-Keywords=")  # Clear existing
         for kw in kw_list:
             cmd.append(f"-Keywords+={kw}")
 
-    # If user provided description, store in IPTC or XMP
     if description.strip():
         cmd.append(f"-Description={description}")
         cmd.append(f"-Caption-Abstract={description}")
 
-    # If lat/lon provided, set GPS. exiftool by default uses EXIF or XMP
     if lat is not None and lon is not None:
         cmd.append(f"-GPSLatitude={lat}")
         cmd.append(f"-GPSLongitude={lon}")
-        # Also specify reference (N/S, E/W)
         lat_ref = "N" if lat >= 0 else "S"
         lon_ref = "E" if lon >= 0 else "W"
         cmd.append(f"-GPSLatitudeRef={lat_ref}")
         cmd.append(f"-GPSLongitudeRef={lon_ref}")
 
-    # exiftool modifies the input file in place with -overwrite_original
-    # so we just pass the temp_input_path at the end
     cmd.append(temp_input_path)
-
-    # Run exiftool
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
-    # Now read back the updated file
     with open(temp_input_path, "rb") as updated_file:
-        updated_image_data = updated_file.read()
+        updated_file_data = updated_file.read()
 
-    # Clean up
     os.remove(temp_input_path)
 
-    # Decide final file name
-    # If user typed something for new_filename, use that; otherwise keep "updated_image.jpg" or something
-    final_filename = new_filename.strip() if new_filename.strip() else "updated_image.jpg"
+    # Decide final name
+    if new_filename.strip():
+        final_name = new_filename.strip()
+    else:
+        final_name = f"updated{extension}"  # Just "updated" + same extension
 
-    return updated_image_data, final_filename
+    return updated_file_data, final_name
 
 # -----------------------------------------------------------------------------
 #                           Main App
@@ -395,12 +387,13 @@ def main():
     st.title("📄 Sibi's Research Bin")
 
     # Create Tabs:
-    # 1. Keyword Checker
-    # 2. Exif Editor (using exiftool)
-    # 3. URL Checker
-    # 4. Date Calculator
-    # 5. HTML Processor
-    tabs = st.tabs(["Keyword Checker", "Exif Editor", "URL Checker", "Date Calculator", "HTML Processor"])
+    tabs = st.tabs([
+        "Keyword Checker",
+        "Exif Editor",
+        "URL Checker",
+        "Date Calculator",
+        "HTML Processor"
+    ])
 
     # -----------------------------------
     # 1) Keyword Checker Tab
@@ -411,324 +404,254 @@ def main():
 
         **This tool allows you to:**
         - Check if each keyword is present in the uploaded Word document.
-        - Verify if each keyword is correctly hyperlinked to the given URL.
-        - Detect the dialect (American, British, Canadian, Australian) used in the article.
-
-        **How to Use:**
-        1. Upload a .docx file.
-        2. Enter keywords and URLs (or `[No Hyperlink]`).
-        3. Click "Run Analysis".
-        4. View the detailed report below.
+        - Verify if each keyword is correctly hyperlinked.
+        - Detect the dialect (American, British, Canadian, Australian).
         """)
         uploaded_file = st.file_uploader("Upload .docx", type=["docx"])
-        keywords_text = st.text_area(
-            "Enter Keywords and URLs",
-            height=300,
-            placeholder="keyword    URL or [No Hyperlink]\nFor example:\nproperty in limassol    https://example.com/..."
-        )
-        run_button, clear_button = st.columns(2)
-        with run_button:
-            run = st.button("Run Analysis", key="run_analysis")
-        with clear_button:
-            clear = st.button("Clear Inputs", key="clear_inputs")
+        keywords_text = st.text_area("Enter Keywords and URLs", height=300)
+        run_btn = st.button("Run Analysis")
+        if run_btn:
+            if not uploaded_file:
+                st.error("Please upload a .docx file.")
+            elif not keywords_text.strip():
+                st.error("Please enter some keywords/URLs.")
+            else:
+                try:
+                    doc = Document(BytesIO(uploaded_file.read()))
+                except Exception as e:
+                    st.error(f"Error reading the document: {e}")
+                    st.stop()
 
-        output = st.container()
+                articles_keywords = parse_keywords_links(keywords_text)
+                if not articles_keywords:
+                    st.error("No valid keywords/URLs found.")
+                    st.stop()
 
-        if run:
-            with output:
-                st.markdown("### 📊 Analysis Report")
-                if uploaded_file is None:
-                    st.error("Please upload a Word document (.docx).")
-                elif not keywords_text.strip():
-                    st.error("Please enter the keywords and URLs.")
-                else:
-                    try:
-                        doc = Document(BytesIO(uploaded_file.read()))
-                    except Exception as e:
-                        st.error(f"Error reading the document: {e}")
-                        st.stop()
+                doc_articles = parse_document_articles(doc)
+                if not doc_articles:
+                    st.error("No articles found.")
+                    st.stop()
 
-                    articles_keywords = parse_keywords_links(keywords_text)
-                    if not articles_keywords:
-                        st.error("No valid keywords and URLs found in the input.")
-                        st.stop()
+                if len(articles_keywords) != len(doc_articles):
+                    st.warning("Number of keyword groups doesn’t match number of articles.")
 
-                    doc_articles = parse_document_articles(doc)
-                    if not doc_articles:
-                        st.error("No articles found in the document based on the expected headers.")
-                        st.stop()
+                all_hyps = []
+                num_images = len(doc.inline_shapes)
+                final_data = []
+                for idx, group in enumerate(articles_keywords):
+                    if idx < len(doc_articles):
+                        paras = doc_articles[idx]
+                        art_text, art_hyps = extract_article_content(paras)
+                        all_hyps.extend(art_hyps)
 
-                    if len(articles_keywords) != len(doc_articles):
-                        st.warning(
-                            "The number of keyword groups does not match the number of articles."
-                        )
+                        # check resource box
+                        has_box, res_url = False, "N/A"
+                        for p in reversed(paras):
+                            if "resource box:" in p.text.lower():
+                                has_box = True
+                                potential_urls = extract_urls_from_paragraph(p)
+                                if potential_urls:
+                                    res_url = potential_urls[-1]
+                                break
 
-                    report_data = []
-                    all_hyperlinks = []
-                    num_images = len(doc.inline_shapes)
-
-                    for idx, article_keywords in enumerate(articles_keywords):
-                        if idx < len(doc_articles):
-                            article_paragraphs = doc_articles[idx]
-                            article_text, article_hyperlinks = extract_article_content(article_paragraphs)
-                            all_hyperlinks.extend(article_hyperlinks)
-                            has_resource_box, resource_box_url = False, "N/A"
-                            # Check for a 'resource box:' line near the end
-                            for para in reversed(article_paragraphs):
-                                if 'resource box:' in para.text.lower():
-                                    has_resource_box = True
-                                    urls = extract_urls_from_paragraph(para)
-                                    if urls:
-                                        resource_box_url = urls[-1]
-                                    break
-
-                            dialect = analyze_dialect(article_text)
-                            keyword_results = []
-                            for keyword, url in article_keywords:
-                                status = check_keyword_hyperlink(
-                                    keyword,
-                                    url if url else "[No Hyperlink]",
-                                    article_hyperlinks,
-                                    article_text
-                                )
-                                if status == 'correct':
-                                    symbol = '✔️ Correct'
-                                    color = 'green'
-                                    details = (
-                                        f'Keyword "<strong>{keyword}</strong>" is correctly linked.'
-                                        if url
-                                        else f'Keyword "<strong>{keyword}</strong>" present with no hyperlink as specified.'
-                                    )
-                                elif status == 'incorrect_url':
-                                    symbol = '⚠️ Incorrect URL'
-                                    color = 'orange'
-                                    details = (
-                                        f'Keyword "<strong>{keyword}</strong>" is present but linked incorrectly.'
-                                    )
-                                else:
-                                    symbol = '❌ Not Found'
-                                    color = 'red'
-                                    details = f'Keyword "<strong>{keyword}</strong>" not found in the article.'
-                                keyword_results.append({
-                                    'Status': symbol,
-                                    'Details': details,
-                                    'Color': color
-                                })
-
-                            report_data.append({
-                                'Article': f'Article #{idx+1}',
-                                'Detected Dialect': dialect,
-                                'Resource Box': resource_box_url if has_resource_box else 'Not found or missing URL.',
-                                'Keywords': keyword_results
-                            })
-                        else:
-                            # If there are more keyword groups than articles
-                            report_data.append({
-                                'Article': f'Article #{idx+1}',
-                                'Detected Dialect': 'Not found.',
-                                'Resource Box': 'N/A',
-                                'Keywords': [{
-                                    'Status': '❌ Not Found',
-                                    'Details': 'No article content.',
-                                    'Color': 'red'
-                                }]
+                        dial = analyze_dialect(art_text)
+                        results_kw = []
+                        for (kw, link) in group:
+                            status = check_keyword_hyperlink(
+                                kw,
+                                link if link else "[No Hyperlink]",
+                                art_hyps,
+                                art_text
+                            )
+                            if status == 'correct':
+                                symbol = '✔️ Correct'
+                                color = 'green'
+                                detail = (f'Keyword "<strong>{kw}</strong>" correctly linked.'
+                                          if link else f'Keyword "<strong>{kw}</strong>" present with no hyperlink.')
+                            elif status == 'incorrect_url':
+                                symbol = '⚠️ Incorrect URL'
+                                color = 'orange'
+                                detail = f'Keyword "<strong>{kw}</strong>" present but linked incorrectly.'
+                            else:
+                                symbol = '❌ Not Found'
+                                color = 'red'
+                                detail = f'Keyword "<strong>{kw}</strong>" not found.'
+                            results_kw.append({
+                                'Status': symbol,
+                                'Details': detail,
+                                'Color': color
                             })
 
-                    report_html = generate_html_report(report_data, num_images, all_hyperlinks)
-                    st.markdown(report_html, unsafe_allow_html=True)
-
-        if clear:
-            st.rerun()
+                        final_data.append({
+                            'Article': f'Article #{idx+1}',
+                            'Detected Dialect': dial,
+                            'Resource Box': res_url if has_box else 'Missing or None',
+                            'Keywords': results_kw
+                        })
+                    else:
+                        final_data.append({
+                            'Article': f'Article #{idx+1}',
+                            'Detected Dialect': 'Not found',
+                            'Resource Box': 'N/A',
+                            'Keywords': [{
+                                'Status': '❌ Not Found',
+                                'Details': 'No article content.',
+                                'Color': 'red'
+                            }]
+                        })
+                rep_html = generate_html_report(final_data, num_images, all_hyps)
+                st.markdown(rep_html, unsafe_allow_html=True)
 
     # -----------------------------------
-    # 2) EXIF Editor Tab (using exiftool)
+    # 2) Exif Editor Tab
     # -----------------------------------
     with tabs[1]:
         st.markdown("""
-        ### 🖼️ EXIF Editor (Using exiftool)
+        ### 🖼️ EXIF Editor (exiftool)
 
-        **This tool allows you to:**
-        - Upload one or multiple images (JPEG or PNG).
-        - View them in a simple gallery.
-        - Edit metadata:
-          - Keywords (comma-separated)
-          - Description
-          - Optional GPS (lat/long)
-          - Optional New Filename
-        - Click "Write EXIF Tags" to embed the data into IPTC/XMP (widely recognized).
-        - Download your updated image.
-
-        **How to Use:**
-        1. Upload one or more images.
-        2. Select an image from the gallery on the right.
-        3. Enter EXIF details.
-        4. Write EXIF Tags & optionally rename the file.
-        5. Download your updated image.
+        Upload **any file** (not limited to JPEG/PNG). Only certain formats can actually be edited.
         """)
 
-        # Keep track of images as (md5_hash -> {"name":..., "bytes":...}) to avoid duplicates
         if "exif_images" not in st.session_state:
             st.session_state.exif_images = {}
-        if "selected_image_hash" not in st.session_state:
-            st.session_state.selected_image_hash = None
+        if "selected_file_hash" not in st.session_state:
+            st.session_state.selected_file_hash = None
 
-        def file_hash(content):
-            """Compute MD5 hash of file bytes to avoid duplicates."""
-            return hashlib.md5(content).hexdigest()
+        def file_md5(data):
+            return hashlib.md5(data).hexdigest()
 
-        # Upload images
-        uploaded_exif_files = st.file_uploader(
-            "Upload Image(s)",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True
-        )
-        if uploaded_exif_files:
-            for f in uploaded_exif_files:
-                img_bytes = f.read()
-                h = file_hash(img_bytes)
+        # Accept any file type
+        uploaded_files = st.file_uploader("Upload Files", type=None, accept_multiple_files=True)
+        if uploaded_files:
+            for upf in uploaded_files:
+                content = upf.read()
+                h = file_md5(content)
                 if h not in st.session_state.exif_images:
-                    # Store dictionary with filename + bytes
-                    st.session_state.exif_images[h] = {"name": f.name, "bytes": img_bytes}
+                    st.session_state.exif_images[h] = {
+                        "filename": upf.name,
+                        "bytes": content
+                    }
                 else:
-                    st.warning(f"Duplicate file skipped: {f.name}")
+                    st.warning(f"Duplicate file skipped: {upf.name}")
 
-        # Clear & Delete Buttons
-        btn_clear_gallery, btn_delete_selected = st.columns(2)
-        with btn_clear_gallery:
+        c1, c2 = st.columns(2)
+        with c1:
             if st.button("Clear Gallery"):
                 st.session_state.exif_images = {}
-                st.session_state.selected_image_hash = None
+                st.session_state.selected_file_hash = None
+        with c2:
+            if st.button("Delete Selected"):
+                if st.session_state.selected_file_hash in st.session_state.exif_images:
+                    del st.session_state.exif_images[st.session_state.selected_file_hash]
+                    st.session_state.selected_file_hash = None
 
-        with btn_delete_selected:
-            if st.button("Delete Selected Image"):
-                sh = st.session_state.selected_image_hash
-                if sh and sh in st.session_state.exif_images:
-                    del st.session_state.exif_images[sh]
-                    st.session_state.selected_image_hash = None
+        left_side, right_side = st.columns([2,1])
+        with right_side:
+            st.markdown("#### File Gallery")
+            for hsh, info in st.session_state.exif_images.items():
+                fn = info["filename"]
+                data = info["bytes"]
+                # Try to display as image
+                try:
+                    img = Image.open(BytesIO(data))
+                    st.image(img, caption=fn, width=130)
+                except UnidentifiedImageError:
+                    # Non-image or unsupported image
+                    st.write(f"{fn} (not displayed as image)")
 
-        # Layout columns: editor on left, gallery on right
-        left_col, right_col = st.columns([2, 1])
+                if st.button(f"Select {fn}", key=f"sel_{hsh}"):
+                    st.session_state.selected_file_hash = hsh
 
-        with right_col:
-            st.markdown("#### Gallery")
-            if st.session_state.exif_images:
-                for h, info in st.session_state.exif_images.items():
-                    name = info["name"]
-                    img_data = info["bytes"]
-                    try:
-                        img = Image.open(BytesIO(img_data))
-                        st.image(img, width=120, caption=name)
-                        if st.button(f"Select {name}", key=f"select_image_{h}"):
-                            st.session_state.selected_image_hash = h
-                    except Exception as e:
-                        st.error(f"Error loading image {name}: {e}")
-            else:
-                st.info("No images in the gallery yet. Please upload images above.")
+        with left_side:
+            st.markdown("#### Edit Metadata")
+            sel_hash = st.session_state.selected_file_hash
+            if sel_hash and sel_hash in st.session_state.exif_images:
+                rec = st.session_state.exif_images[sel_hash]
+                raw_bytes = rec["bytes"]
+                orig_name = rec["filename"]
+                st.write(f"Currently selected: **{orig_name}**")
 
-        with left_col:
-            st.markdown("#### EXIF Data Editor")
-            shash = st.session_state.selected_image_hash
-            if shash and shash in st.session_state.exif_images:
-                selected_image = st.session_state.exif_images[shash]
-                selected_image_data = selected_image["bytes"]
-
-                # Fields
-                keywords_tags = st.text_input("Keywords / Tags (comma-separated)")
-                description_text = st.text_input("Description / Alt Text")
-                lat_input = st.text_input("Latitude (e.g. 34.70713)")
-                lon_input = st.text_input("Longitude (e.g. 33.02261)")
-                new_filename_input = st.text_input("New Filename (optional)", value="")
+                kw_in = st.text_input("Keywords (comma-separated)")
+                desc_in = st.text_input("Description / Alt Text")
+                lat_in = st.text_input("Latitude")
+                lon_in = st.text_input("Longitude")
+                newf_in = st.text_input("New Filename (optional)")
 
                 try:
-                    lat_val = float(lat_input.strip()) if lat_input.strip() else None
-                    lon_val = float(lon_input.strip()) if lon_input.strip() else None
+                    lat_val = float(lat_in) if lat_in.strip() else None
+                    lon_val = float(lon_in) if lon_in.strip() else None
                 except ValueError:
-                    st.warning("Invalid latitude or longitude. Please ensure numeric values.")
                     lat_val, lon_val = None, None
-
-                if lat_val is not None and lon_val is not None:
-                    map_data = pd.DataFrame({'lat': [lat_val], 'lon': [lon_val]})
-                    st.map(map_data)
+                    st.warning("Invalid lat/lon values.")
 
                 if st.button("Write EXIF Tags"):
-                    updated_img_data, final_filename = write_exif_tags_exiftool(
-                        image_bytes=selected_image_data,
-                        keywords=keywords_tags,
-                        description=description_text,
+                    updated, final_name = write_exif_tags_exiftool(
+                        file_bytes=raw_bytes,
+                        orig_filename=orig_name,
+                        keywords=kw_in,
+                        description=desc_in,
                         lat=lat_val,
                         lon=lon_val,
-                        new_filename=new_filename_input
+                        new_filename=newf_in
                     )
-                    # Update stored bytes
-                    st.session_state.exif_images[shash]["bytes"] = updated_img_data
-                    # If user gave a new filename, we update the name
-                    if new_filename_input.strip():
-                        st.session_state.exif_images[shash]["name"] = final_filename
+                    st.session_state.exif_images[sel_hash]["bytes"] = updated
+                    st.session_state.exif_images[sel_hash]["filename"] = final_name
+                    st.success(f"Successfully updated metadata. Final file name: {final_name}")
 
-                    st.success(f"EXIF tags written successfully! Final file name: {final_filename}")
-
-                # Provide a download link
-                out_img_data = st.session_state.exif_images[shash]["bytes"]
-                dl_filename = st.session_state.exif_images[shash]["name"]
-                b64_img = base64.b64encode(out_img_data).decode()
-                download_link = f'<a href="data:file/jpg;base64,{b64_img}" download="{dl_filename}">Download Updated Image</a>'
-                st.markdown(download_link, unsafe_allow_html=True)
+                # Download link
+                dload_data = st.session_state.exif_images[sel_hash]["bytes"]
+                dload_fname = st.session_state.exif_images[sel_hash]["filename"]
+                b64file = base64.b64encode(dload_data).decode()
+                mime_type = "application/octet-stream"
+                dlink = f'<a href="data:{mime_type};base64,{b64file}" download="{dload_fname}">Download Updated File</a>'
+                st.markdown(dlink, unsafe_allow_html=True)
             else:
-                st.info("Select an image from the gallery on the right to edit its metadata.")
+                st.info("Select a file from the gallery on the right.")
 
     # -----------------------------------
     # 3) URL Checker Tab
     # -----------------------------------
     with tabs[2]:
-        st.markdown("""
-        ### 🔗 URL Checker
-
-        **Check if a list of URLs is online and retrieve information from a CSV database.**
-
-        **How to Use:**
-        1. Ensure `/home/databased.csv` exists and contains a 'url' column.
-        2. Enter URLs separated by commas or newlines.
-        3. Click "Check URLs" to see which are online and any matching CSV info.
-        """)
-        urls_input = st.text_area("Enter URLs", height=200)
-        check_urls_btn = st.button("Check URLs")
-
-        if check_urls_btn:
-            if not urls_input.strip():
-                st.error("Please enter URLs.")
+        st.markdown("### 🔗 URL Checker")
+        user_urls = st.text_area("Enter URLs (comma or newline separated)")
+        check_btn = st.button("Check URLs")
+        if check_btn:
+            if not user_urls.strip():
+                st.error("Please provide at least one URL.")
             else:
-                csv_df = load_client_database_csv()
-                if csv_df is None:
-                    st.error("The client instructions CSV file 'databased.csv' was not found.")
+                df_clients = load_client_database_csv()
+                if df_clients is None:
+                    st.error("CSV not found at /home/databased.csv")
                 else:
-                    if 'url' not in csv_df.columns:
-                        st.error("The CSV file must contain a column named 'url'.")
+                    if 'url' not in df_clients.columns:
+                        st.error("CSV must have a 'url' column.")
                     else:
-                        input_urls = parse_input_urls(urls_input)
-                        if not input_urls:
+                        splitted = parse_input_urls(user_urls)
+                        if not splitted:
                             st.error("No valid URLs found.")
                         else:
-                            normalized_urls = [normalize_url(url) for url in input_urls]
                             results = []
-                            for original_url, url in zip(input_urls, normalized_urls):
-                                matching_row = csv_df[csv_df['url'].str.lower() == url.lower()]
-                                status, error = check_url_online(url)
-                                result = {'URL': original_url, 'Status': status}
-                                if not matching_row.empty:
-                                    row_data = matching_row.to_dict(orient='records')[0]
-                                    for key, value in row_data.items():
-                                        if key.lower() != 'url':
-                                            result[key] = value
+                            for s in splitted:
+                                norm = normalize_url(s)
+                                match_row = df_clients[df_clients['url'].str.lower() == norm.lower()]
+                                stat, err = check_url_online(norm)
+                                row_data = {
+                                    "URL": s,
+                                    "Status": stat
+                                }
+                                if not match_row.empty:
+                                    rdict = match_row.to_dict(orient='records')[0]
+                                    for k, v in rdict.items():
+                                        if k.lower() != 'url':
+                                            row_data[k] = v
                                 else:
-                                    result['CSV Data'] = 'N/A'
-                                if error:
-                                    result['Error'] = error
-                                results.append(result)
-                            results_df = pd.DataFrame(results)
-                            # Re-order columns for display
-                            cols = ['URL','Status'] + [c for c in results_df.columns if c not in ['URL','Status']]
-                            results_df = results_df[cols]
-                            st.dataframe(results_df, use_container_width=True)
+                                    row_data["CSV Data"] = "N/A"
+                                if err:
+                                    row_data["Error"] = err
+                                results.append(row_data)
+                            out_df = pd.DataFrame(results)
+                            col_order = ['URL','Status'] + [c for c in out_df.columns if c not in ['URL','Status']]
+                            st.dataframe(out_df[col_order], use_container_width=True)
 
     # -----------------------------------
     # 4) Date Calculator Tab
@@ -736,29 +659,21 @@ def main():
     with tabs[3]:
         st.markdown("""
         ### 📅 Date Calculator
-        This tool lets you:
-        - Find the number of days between two dates.
-        - Add or subtract a certain number of days from a given date.
+        - Compute day differences
+        - Add or subtract days
         """)
-        calc_mode = st.radio("Select Mode", ("Date Difference", "Date Arithmetic"))
-
-        if calc_mode == "Date Difference":
-            st.markdown("**Find the number of days between two dates**")
-            start_date = st.date_input("Select the start date")
-            end_date = st.date_input("Select the end date")
-
-            if start_date and end_date:
-                diff = (end_date - start_date).days
-                st.write(f"Number of days between {start_date.strftime('%m/%d/%y')} and {end_date.strftime('%m/%d/%y')} is: {abs(diff)} day(s).")
-
-        else:  # Date Arithmetic
-            st.markdown("**Add or Subtract Days from a Given Date**")
-            base_date = st.date_input("Select the base date")
-            days_offset = st.number_input("Number of days to add (positive) or subtract (negative)", value=0, step=1)
-            direction = "after" if days_offset >= 0 else "before"
-
-            new_date = base_date + datetime.timedelta(days=days_offset)
-            st.write(f"{abs(days_offset)} day(s) {direction} {base_date.strftime('%m/%d/%y')} is {new_date.strftime('%m/%d/%y')}")
+        mode_sel = st.radio("Mode", ["Date Difference", "Date Arithmetic"])
+        if mode_sel == "Date Difference":
+            d1 = st.date_input("Start Date")
+            d2 = st.date_input("End Date")
+            if d1 and d2:
+                delta = abs((d2 - d1).days)
+                st.write(f"Days difference: {delta}")
+        else:
+            base_date = st.date_input("Base Date")
+            day_offset = st.number_input("Days (+/-)", value=0, step=1)
+            final_date = base_date + datetime.timedelta(days=day_offset)
+            st.write(f"Result: {final_date}")
 
     # -----------------------------------
     # 5) HTML Processor Tab
@@ -766,43 +681,30 @@ def main():
     with tabs[4]:
         st.markdown("""
         ### 🏷️ HTML Processor
-
-        **This tool allows you to:**
-        - Upload an HTML file.
-        - Extract text from specific tags (`<h1>...<h6>`, `<p>`, `<a>`, `<ul>`, `<li>`).
-        - Download the extracted text as a `.txt` file.
-
-        **How to Use:**
-        1. Upload an `.html` file.
-        2. The text from the specified tags will be extracted in order.
-        3. Click "Download Processed Text" to save as a `.txt` file.
+        Upload an HTML file to extract text from <h1>...<h6>, <p>, <a>, <ul>, <li>.
         """)
-        uploaded_html_file = st.file_uploader("Upload HTML", type=["html"])
-        if uploaded_html_file is not None:
+        up_html = st.file_uploader("Upload HTML File", type=["html"])
+        if up_html:
             try:
-                html_content = uploaded_html_file.read().decode('utf-8')
-                soup = BeautifulSoup(html_content, 'html.parser')
+                raw_html = up_html.read().decode("utf-8", errors="replace")
+                soup = BeautifulSoup(raw_html, 'html.parser')
             except Exception as e:
-                st.error(f"Error reading the HTML file: {e}")
+                st.error(f"Failed reading HTML: {e}")
                 st.stop()
 
-            # Extract text from tags
-            extracted_lines = []
-            for tag in soup.find_all(['h1','h2','h3','h4','h5','h6','p','a','ul','li']):
-                extracted_lines.append(f"<{tag.name}> {tag.get_text(strip=True)}")
+            lines_found = []
+            for t in soup.find_all(['h1','h2','h3','h4','h5','h6','p','a','ul','li']):
+                txt = t.get_text(strip=True)
+                lines_found.append(f"<{t.name}> {txt}")
 
-            # Join extracted lines into a single string
-            processed_text = "\n".join(extracted_lines)
+            combined = "\n".join(lines_found)
+            st.markdown("#### Preview:")
+            st.text(combined)
 
-            # Display a preview of the processed text
-            st.markdown("#### Extracted Text Preview:")
-            st.text(processed_text)
-
-            # Download button for the processed text
             st.download_button(
-                label="Download Processed Text",
-                data=processed_text,
-                file_name="web_text_output.txt",
+                label="Download Extracted Text",
+                data=combined,
+                file_name="extracted_text.txt",
                 mime="text/plain"
             )
 
