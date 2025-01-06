@@ -1,0 +1,9 @@
+beautifulsoup4
+nltk
+pandas
+piexif
+pillow
+python-docx
+requests
+streamlit
+thefuzz
