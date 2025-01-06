@@ -583,6 +583,18 @@ def main():
                 except ValueError:
                     lat_val, lon_val = None, None
                     st.warning("Invalid lat/lon values.")
+             # **Map Display Code Starts Here**
+                if lat_val is not None and lon_val is not None:
+                    st.markdown("#### Location Map")
+                    map_data = pd.DataFrame({
+                        'latitude': [lat_val],
+                        'longitude': [lon_val]
+                    })
+                st.map(map_data)
+                elif lat_in or lon_in:
+                    st.warning("Please provide both valid latitude and longitude to display the map.")
+            # **Map Display Code Ends Here**
+
 
                 if st.button("Write EXIF Tags"):
                     updated, final_name = write_exif_tags_exiftool(
