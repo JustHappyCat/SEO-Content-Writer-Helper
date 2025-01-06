@@ -591,8 +591,9 @@ def main():
                         'longitude': [lon_val]
                     })
                 st.map(map_data)
-                elif lat_in or lon_in:
+                if (lat_val is None or lon_val is None) and (lat_in or lon_in):
                     st.warning("Please provide both valid latitude and longitude to display the map.")
+       
             # **Map Display Code Ends Here**
 
 
