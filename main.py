@@ -16,6 +16,8 @@ from nltk.tokenize import wordpunct_tokenize
 from nltk.chat.util import Chat, reflections  # Not used, but kept for completeness
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup  # For HTML parsing in the HTML Processor tab
+import json  # Added for parsing exiftool JSON output
+import exiftool
 
 st.set_page_config(page_title="📄 Sibi's Research Bin", layout="wide")
 
@@ -247,12 +249,14 @@ def generate_html_report(summary_data, num_images, all_hyperlinks):
     - Keyword status table
     - Additional Hyperlinks
     - Image count
+    - Total number of hyperlinked keywords per article
     """
     report = ''
     for article in summary_data:
         report += f"<h3>{article['Article']}</h3>"
         report += f"<p><strong>Detected Dialect:</strong> {article['Detected Dialect']}</p>"
         report += f"<p><strong>Resource Box:</strong> {article['Resource Box']}</p>"
+        report += f"<p><strong>Total Hyperlinked Keywords:</strong> {article['Total Hyperlinked Keywords']}</p>"
         keywords_df = pd.DataFrame(article['Keywords'])
 
         def color_status(row):
@@ -327,7 +331,11 @@ def write_exif_tags_exiftool(
     description="",
     lat=None,
     lon=None,
-    new_filename=""
+    new_filename="",
+    author="",
+    date_taken="",
+    date_acquired="",
+    copyright_info=""
 ):
     """
     Writes IPTC/XMP data via exiftool, if supported. Otherwise returns file unchanged.
@@ -353,8 +361,20 @@ def write_exif_tags_exiftool(
             cmd.append(f"-Keywords+={kw}")
 
     if description.strip():
-        cmd.append(f"-Description={description}")
-        cmd.append(f"-Caption-Abstract={description}")
+        cmd.append(f"-Title={description}")
+        cmd.append(f"-Subject={description}")
+
+    if author.strip():
+        cmd.append(f"-Author={author}")
+
+    if date_taken.strip():
+        cmd.append(f"-DateTimeOriginal={date_taken}")
+
+    if date_acquired.strip():
+        cmd.append(f"-DateAcquired={date_acquired}")
+
+    if copyright_info.strip():
+        cmd.append(f"-Copyright={copyright_info}")
 
     if lat is not None and lon is not None:
         cmd.append(f"-GPSLatitude={lat}")
@@ -376,9 +396,34 @@ def write_exif_tags_exiftool(
     if new_filename.strip():
         final_name = new_filename.strip()
     else:
-        final_name = f"updated{extension}"  # Just "updated" + same extension
+        final_name = orig_filename  # Keep original filename if no new name provided
 
     return updated_file_data, final_name
+
+def read_exif_tags_exiftool(file_bytes):
+    """
+    Reads EXIF data from the file using exiftool.
+    Returns a dictionary of tags or empty dict if none found.
+    """
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(file_bytes)
+        temp_file_path = temp_file.name
+
+    cmd = ["exiftool", "-j", temp_file_path]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    os.remove(temp_file_path)
+
+    if result.returncode != 0:
+        return {}
+    try:
+        exif_data = json.loads(result.stdout)
+        if isinstance(exif_data, list) and len(exif_data) > 0:
+            return exif_data[0]
+        return {}
+    except json.JSONDecodeError:
+        return {}
 
 # -----------------------------------------------------------------------------
 #                           Main App
@@ -456,6 +501,7 @@ def main():
 
                         dial = analyze_dialect(art_text)
                         results_kw = []
+                        hyperlinked_count = 0  # Initialize count of hyperlinked keywords
                         for (kw, link) in group:
                             status = check_keyword_hyperlink(
                                 kw,
@@ -468,6 +514,7 @@ def main():
                                 color = 'green'
                                 detail = (f'Keyword "<strong>{kw}</strong>" correctly linked.'
                                           if link else f'Keyword "<strong>{kw}</strong>" present with no hyperlink.')
+                                hyperlinked_count +=1
                             elif status == 'incorrect_url':
                                 symbol = '⚠️ Incorrect URL'
                                 color = 'orange'
@@ -486,6 +533,7 @@ def main():
                             'Article': f'Article #{idx+1}',
                             'Detected Dialect': dial,
                             'Resource Box': res_url if has_box else 'Missing or None',
+                            'Total Hyperlinked Keywords': hyperlinked_count,
                             'Keywords': results_kw
                         })
                     else:
@@ -493,6 +541,7 @@ def main():
                             'Article': f'Article #{idx+1}',
                             'Detected Dialect': 'Not found',
                             'Resource Box': 'N/A',
+                            'Total Hyperlinked Keywords': 0,
                             'Keywords': [{
                                 'Status': '❌ Not Found',
                                 'Details': 'No article content.',
@@ -571,11 +620,50 @@ def main():
                 orig_name = rec["filename"]
                 st.write(f"Currently selected: **{orig_name}**")
 
-                kw_in = st.text_input("Keywords (comma-separated)", placeholder="e.g., keyword1, keyword2")
-                desc_in = st.text_input("Description / Alt Text", placeholder="Enter description here")
-                lat_in = st.text_input("Latitude", placeholder="e.g., 37.7749")
-                lon_in = st.text_input("Longitude", placeholder="e.g., -122.4194")
+                # Read existing EXIF data
+                exif_data = read_exif_tags_exiftool(raw_bytes)
+
+                # Initialize fields with existing data
+                kw_existing = ', '.join(exif_data.get('Keywords', [])) if exif_data.get('Keywords') else ''
+                desc_existing = exif_data.get('Description') or exif_data.get('Title') or ''
+                author_existing = exif_data.get('Author', '')
+                date_taken_existing = exif_data.get('DateTimeOriginal', '')
+                date_acquired_existing = exif_data.get('DateAcquired', '')
+                copyright_existing = exif_data.get('Copyright', '')
+                lat_existing = exif_data.get('GPSLatitude')
+                lon_existing = exif_data.get('GPSLongitude')
+
+                # Option to erase existing metadata
+                if exif_data:
+                    if st.checkbox("Erase Existing Metadata"):
+                        kw_existing = ''
+                        desc_existing = ''
+                        author_existing = ''
+                        date_taken_existing = ''
+                        date_acquired_existing = ''
+                        copyright_existing = ''
+                        lat_existing = None
+                        lon_existing = None
+
+                kw_in = st.text_input("Keywords (comma-separated)", value=kw_existing, placeholder="e.g., keyword1, keyword2")
+                desc_in = st.text_input("Description / Alt Text", value=desc_existing, placeholder="Enter description here")
+                author_in = st.text_input("Author", value=author_existing, placeholder="Enter author name")
+                date_taken_in = st.text_input("Date Taken", value=date_taken_existing, placeholder="YYYY:MM:DD HH:MM:SS")
+                date_acquired_in = st.text_input("Date Acquired", value=date_acquired_existing, placeholder="YYYY:MM:DD HH:MM:SS")
+                copyright_in = st.text_input("Copyright", value=copyright_existing, placeholder="Enter copyright information")
+                lat_in = st.text_input("Latitude", value=lat_existing if lat_existing else "", placeholder="e.g., 37.7749")
+                lon_in = st.text_input("Longitude", value=lon_existing if lon_existing else "", placeholder="e.g., -122.4194")
                 newf_in = st.text_input("New Filename (optional)", placeholder="Enter new filename if desired")
+
+                # In Depth Mode Toggle
+                in_depth = st.checkbox("In depth mode")
+                if in_depth:
+                    # Additional fields are already included above
+                    st.markdown("#### In Depth Metadata Fields")
+                    # Since fields are already present, you might want to hide them initially
+                    # Alternatively, adjust the UI to show/hide these fields based on 'in_depth'
+                    # For simplicity, fields are always present but users can use 'in_depth' to know about them
+                    pass  # Fields are already included above
 
                 try:
                     lat_val = float(lat_in) if lat_in.strip() else None
@@ -613,7 +701,11 @@ def main():
                         description=desc_in,
                         lat=lat_val,
                         lon=lon_val,
-                        new_filename=newf_in
+                        new_filename=newf_in,
+                        author=author_in if in_depth else "",
+                        date_taken=date_taken_in if in_depth else "",
+                        date_acquired=date_acquired_in if in_depth else "",
+                        copyright_info=copyright_in if in_depth else ""
                     )
                     st.session_state.exif_images[sel_hash]["bytes"] = updated
                     st.session_state.exif_images[sel_hash]["filename"] = final_name
