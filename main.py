@@ -556,7 +556,7 @@ def main():
     # -----------------------------------
     with tabs[1]:
         st.markdown("""
-        ### 🖼️ EXIF Editor (exiftool)
+        ### 🖼️ EXIF Editor (exiftool updt)
 
         Upload **any file** (not limited to JPEG/PNG). Only certain formats can actually be edited.
         """)
