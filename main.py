@@ -17,7 +17,7 @@ from nltk.chat.util import Chat, reflections  # Not used, but kept for completen
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup  # For HTML parsing in the HTML Processor tab
 import json  # Added for parsing exiftool JSON output
-import exiftool
+
 
 st.set_page_config(page_title="📄 Sibi's Research Bin", layout="wide")
 
