@@ -486,22 +486,34 @@ def main():
                 for idx, group in enumerate(articles_keywords):
                     if idx < len(doc_articles):
                         paras = doc_articles[idx]
-                        art_text, art_hyps = extract_article_content(paras)
+
+                        # Identify the paragraph containing "resource box:"
+                        res_index = None
+                        for i, p in enumerate(paras):
+                            if "resource box:" in p.text.lower():
+                                res_index = i
+                                break
+
+                        # Exclude the resource box paragraph (if found) from analysis
+                        if res_index is not None:
+                            paras_for_analysis = paras[:res_index]
+                        else:
+                            paras_for_analysis = paras
+
+                        art_text, art_hyps = extract_article_content(paras_for_analysis)
                         all_hyps.extend(art_hyps)
 
-                        # check resource box
+                        # Now retrieve the resource box info if it exists
                         has_box, res_url = False, "N/A"
-                        for p in reversed(paras):
-                            if "resource box:" in p.text.lower():
-                                has_box = True
-                                potential_urls = extract_urls_from_paragraph(p)
-                                if potential_urls:
-                                    res_url = potential_urls[-1]
-                                break
+                        if res_index is not None:
+                            has_box = True
+                            potential_urls = extract_urls_from_paragraph(paras[res_index])
+                            if potential_urls:
+                                res_url = potential_urls[-1]
 
                         dial = analyze_dialect(art_text)
                         results_kw = []
-                        hyperlinked_count = 0  # Initialize count of hyperlinked keywords
+                        hyperlinked_count = 0  # Initialize count of hyperlinked keywords (excluding resource box)
                         for (kw, link) in group:
                             status = check_keyword_hyperlink(
                                 kw,
@@ -514,7 +526,7 @@ def main():
                                 color = 'green'
                                 detail = (f'Keyword "<strong>{kw}</strong>" correctly linked.'
                                           if link else f'Keyword "<strong>{kw}</strong>" present with no hyperlink.')
-                                hyperlinked_count +=1
+                                hyperlinked_count += 1
                             elif status == 'incorrect_url':
                                 symbol = '⚠️ Incorrect URL'
                                 color = 'orange'
@@ -645,53 +657,54 @@ def main():
                         lat_existing = None
                         lon_existing = None
 
+                # Always visible fields
                 kw_in = st.text_input("Keywords (comma-separated)", value=kw_existing, placeholder="e.g., keyword1, keyword2")
                 desc_in = st.text_input("Description / Alt Text", value=desc_existing, placeholder="Enter description here")
-                author_in = st.text_input("Author", value=author_existing, placeholder="Enter author name")
-                date_taken_in = st.text_input("Date Taken", value=date_taken_existing, placeholder="YYYY:MM:DD HH:MM:SS")
-                date_acquired_in = st.text_input("Date Acquired", value=date_acquired_existing, placeholder="YYYY:MM:DD HH:MM:SS")
-                copyright_in = st.text_input("Copyright", value=copyright_existing, placeholder="Enter copyright information")
-                lat_in = st.text_input("Latitude", value=lat_existing if lat_existing else "", placeholder="e.g., 37.7749")
-                lon_in = st.text_input("Longitude", value=lon_existing if lon_existing else "", placeholder="e.g., -122.4194")
-                newf_in = st.text_input("New Filename (optional)", placeholder="Enter new filename if desired")
 
                 # In Depth Mode Toggle
                 in_depth = st.checkbox("In depth mode")
-                if in_depth:
-                    # Additional fields are already included above
-                    st.markdown("#### In Depth Metadata Fields")
-                    # Since fields are already present, you might want to hide them initially
-                    # Alternatively, adjust the UI to show/hide these fields based on 'in_depth'
-                    # For simplicity, fields are always present but users can use 'in_depth' to know about them
-                    pass  # Fields are already included above
 
+                # Show additional fields only if in-depth is selected
+                if in_depth:
+                    author_in = st.text_input("Author", value=author_existing, placeholder="Enter author name")
+                    date_taken_in = st.text_input("Date Taken", value=date_taken_existing, placeholder="YYYY:MM:DD HH:MM:SS")
+                    date_acquired_in = st.text_input("Date Acquired", value=date_acquired_existing, placeholder="YYYY:MM:DD HH:MM:SS")
+                    copyright_in = st.text_input("Copyright", value=copyright_existing, placeholder="Enter copyright information")
+                else:
+                    author_in = ""
+                    date_taken_in = ""
+                    date_acquired_in = ""
+                    copyright_in = ""
+
+                lat_in = st.text_input("Latitude", value=str(lat_existing) if lat_existing else "", placeholder="e.g., 37.7749")
+                lon_in = st.text_input("Longitude", value=str(lon_existing) if lon_existing else "", placeholder="e.g., -122.4194")
+                newf_in = st.text_input("New Filename (optional)", placeholder="Enter new filename if desired")
+
+                # Convert lat/lon to float
                 try:
                     lat_val = float(lat_in) if lat_in.strip() else None
                     lon_val = float(lon_in) if lon_in.strip() else None
 
-                    # Validate coordinate ranges
                     if lat_val is not None and not (-90 <= lat_val <= 90):
                         st.warning("Latitude must be between -90 and 90.")
                         lat_val = None
                     if lon_val is not None and not (-180 <= lon_val <= 180):
                         st.warning("Longitude must be between -180 and 180.")
                         lon_val = None
-
                 except ValueError:
                     lat_val, lon_val = None, None
                     st.warning("Invalid lat/lon values. Please enter numeric values.")
 
-                # **Map Display Code Starts Here**
+                # Map display
                 if lat_val is not None and lon_val is not None:
                     st.markdown("#### Location Map")
                     map_data = pd.DataFrame({
-                        'lat': [lat_val],  # Changed from 'latitude' to 'lat'
-                        'lon': [lon_val]   # Changed from 'longitude' to 'lon'
+                        'lat': [lat_val],
+                        'lon': [lon_val]
                     })
                     st.map(map_data)
-                if (lat_val is None or lon_val is None) and (lat_in or lon_in):
+                elif (lat_in or lon_in) and (lat_val is None or lon_val is None):
                     st.warning("Please provide both valid latitude and longitude to display the map.")
-                # **Map Display Code Ends Here**
 
                 if st.button("Write EXIF Tags"):
                     updated, final_name = write_exif_tags_exiftool(
@@ -702,10 +715,10 @@ def main():
                         lat=lat_val,
                         lon=lon_val,
                         new_filename=newf_in,
-                        author=author_in if in_depth else "",
-                        date_taken=date_taken_in if in_depth else "",
-                        date_acquired=date_acquired_in if in_depth else "",
-                        copyright_info=copyright_in if in_depth else ""
+                        author=author_in,
+                        date_taken=date_taken_in,
+                        date_acquired=date_acquired_in,
+                        copyright_info=copyright_in
                     )
                     st.session_state.exif_images[sel_hash]["bytes"] = updated
                     st.session_state.exif_images[sel_hash]["filename"] = final_name
