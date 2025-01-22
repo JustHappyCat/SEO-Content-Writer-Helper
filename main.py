@@ -641,8 +641,12 @@ def main():
                     kw_val = []
                 elif isinstance(kw_val, str):
                     kw_val = [kw_val]
-                elif not isinstance(kw_val, list):
+                elif isinstance(kw_val, list):
+                    # Make sure all elements are strings before joining
+                    kw_val = [str(v) for v in kw_val]
+                else:
                     kw_val = []
+
                 kw_existing = ', '.join(kw_val)
 
                 desc_existing = exif_data.get('Description') or exif_data.get('Title') or ''
