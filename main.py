@@ -636,15 +636,15 @@ def main():
                 exif_data = read_exif_tags_exiftool(raw_bytes)
 
                 # Initialize fields with existing data
-                ####kw_existing = ', '.join(exif_data.get('Keywords', [])) if exif_data.get('Keywords') else ''
                 kw_val = exif_data.get('Keywords')
                 if not kw_val:
                     kw_val = []
-                    elif isinstance(kw_val, str):
-                        kw_val = [kw_val]
-                        elif not isinstance(kw_val, list):
-                            kw_val = []
-                            kw_existing = ', '.join(kw_val)
+                elif isinstance(kw_val, str):
+                    kw_val = [kw_val]
+                elif not isinstance(kw_val, list):
+                    kw_val = []
+                kw_existing = ', '.join(kw_val)
+
                 desc_existing = exif_data.get('Description') or exif_data.get('Title') or ''
                 author_existing = exif_data.get('Author', '')
                 date_taken_existing = exif_data.get('DateTimeOriginal', '')
