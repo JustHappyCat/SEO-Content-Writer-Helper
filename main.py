@@ -362,7 +362,7 @@ def write_exif_tags_exiftool(
 
     if description.strip():
         cmd.append(f"-Title={description}")
-        cmd.append(f"-Subject={description}")
+        cmd.append(f"-XPSubject={description}")
 
     if author.strip():
         cmd.append(f"-Author={author}")
