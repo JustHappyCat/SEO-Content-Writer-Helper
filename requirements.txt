@@ -5,5 +5,5 @@ piexif
 pillow
 python-docx
 requests
-streamlit
+streamlit>=1.28.0
 thefuzz
